@@ -16,9 +16,6 @@ groq==0.8.0
 openai==1.52.0
 huggingface_hub==0.24.6
 
-# Stability AI for Image Generation
-stability_sdk==0.8.6
-
 # Database - Astra DB (Cassandra)
 astrapy==2.1.0
 cassandra-driver==3.30.0
