@@ -1,0 +1,97 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Public and private metadata for application users.",
+      "type": "object",
+      "properties": {
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "phone": { "type": "string" },
+        "dob": { "type": "string" },
+        "gender": { "type": "string" },
+        "location": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fullName", "email", "role", "createdAt"]
+    },
+    "Blog": {
+      "title": "Blog Post",
+      "description": "A news or insight article published by admins.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "author": { "type": "string" },
+        "authorId": { "type": "string" },
+        "date": { "type": "string" },
+        "image": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content", "author", "authorId", "createdAt"]
+    },
+    "ContactMessage": {
+      "title": "Contact Form Submission",
+      "description": "Messages sent from the contact form.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string", "enum": ["new", "read", "replied"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "message", "status", "createdAt"]
+    },
+    "Chat": {
+      "title": "Chat Session",
+      "description": "Metadata for a conversation session.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "createdAt"]
+    },
+    "Message": {
+      "title": "Chat Message",
+      "description": "An individual message within a chat session.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "image", "file"] },
+        "imageData": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chatId", "role", "content", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents."
+    },
+    "/blogs/{blogId}": {
+      "schema": "Blog",
+      "description": "Admin-published blog posts."
+    },
+    "/contact_messages/{messageId}": {
+      "schema": "ContactMessage",
+      "description": "Contact form submissions."
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "User chat sessions."
+    },
+    "/users/{userId}/chats/{chatId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages within a specific chat session."
+    }
+  }
+}

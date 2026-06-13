@@ -1,0 +1,107 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isAdmin() { return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isValidUser(data) {
+      return data.fullName is string && data.fullName.size() <= 100
+          && data.email is string && data.email.size() <= 100
+          && data.username is string && data.username.size() <= 50
+          && (data.phone == null || (data.phone is string && data.phone.size() <= 20))
+          && (data.dob == null || (data.dob is string && data.dob.size() <= 20))
+          && (data.gender == null || (data.gender is string && data.gender.size() <= 20))
+          && (data.location == null || (data.location is string && data.location.size() <= 100))
+          && data.role in ['user', 'admin']
+          && data.createdAt is timestamp;
+    }
+
+    function isValidBlog(data) {
+      return data.title is string && data.title.size() <= 200
+          && data.content is string && data.content.size() <= 50000
+          && data.author is string && data.author.size() <= 100
+          && data.authorId is string && isValidId(data.authorId)
+          && (data.image == null || (data.image is string && data.image.size() <= 500))
+          && (data.date == null || (data.date is string && data.date.size() <= 50))
+          && data.createdAt is timestamp;
+    }
+
+    function isValidContactMessage(data) {
+      return data.name is string && data.name.size() <= 100
+          && data.email is string && data.email.size() <= 100
+          && data.message is string && data.message.size() <= 5000
+          && data.status in ['new', 'read', 'replied']
+          && data.createdAt is timestamp;
+    }
+
+    function isValidChat(data) {
+      return data.userId is string && isValidId(data.userId)
+          && data.title is string && data.title.size() <= 200
+          && data.createdAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.chatId is string && isValidId(data.chatId)
+          && data.role in ['user', 'assistant']
+          && data.content is string && data.content.size() <= 5000
+          && (data.type == null || (data.type in ['text', 'image', 'file']))
+          && (data.imageData == null || (data.imageData is string && data.imageData.size() <= 100000))
+          && data.createdAt is timestamp;
+    }
+
+    // --- Collections ---
+
+    // Admins List
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+    }
+
+    // Users
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(incoming()) && incoming().role == 'user' && incoming().createdAt == request.time;
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(incoming()) 
+                     && incoming().role == existing().role
+                     && incoming().createdAt == existing().createdAt;
+    }
+
+    // Blogs
+    match /blogs/{blogId} {
+      allow read: if true;
+      allow create: if isAdmin() && isValidBlog(incoming()) && incoming().createdAt == request.time;
+      allow update: if isAdmin() && isValidBlog(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Contact Messages
+    match /contact_messages/{messageId} {
+      allow read: if isAdmin();
+      allow create: if isValidContactMessage(incoming()) && incoming().status == 'new' && incoming().createdAt == request.time;
+      allow update: if isAdmin() && isValidContactMessage(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // User Chats & Messages
+    match /users/{userId}/chats/{chatId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidChat(incoming()) && incoming().userId == userId && incoming().createdAt == request.time;
+      allow update: if (isOwner(userId) || isAdmin()) && isValidChat(incoming());
+      allow delete: if isOwner(userId) || isAdmin();
+      
+      match /messages/{messageId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidMessage(incoming()) && incoming().createdAt == request.time;
+      }
+    }
+  }
+}
