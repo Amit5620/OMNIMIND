@@ -21,7 +21,7 @@ stability_sdk==0.8.0
 
 # Database - Astra DB (Cassandra)
 astrapy==2.1.0
-cassandra-driver==3.29.0
+cassandra-driver==3.30.0
 
 # Cloud Storage
 cloudinary==1.40.0
