@@ -20,7 +20,7 @@ huggingface_hub==0.24.6
 stability_sdk==0.8.0
 
 # Database - Astra DB (Cassandra)
-astrapy==2.0.2
+astrapy==2.1.0
 cassandra-driver==3.29.0
 
 # Cloud Storage
