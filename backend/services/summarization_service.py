@@ -82,6 +82,7 @@ class SummarizationService:
         user_id: str,
         chat_id: Optional[str] = None
     ) -> Dict[str, Any]:
+
         """
         Summarize YouTube video content with DB persistence
         
@@ -104,27 +105,23 @@ class SummarizationService:
             if not chat_id:
                 chat_id = f"youtube_{user_id}_{uuid.uuid4().hex[:12]}"
 
-            # Retry transcript fetch for transient network/rate-limit issues.
-            transcript_text: Optional[str] = None
-            for attempt in range(1, 4):
-                try:
-                    transcript_text = await self._get_youtube_transcript(video_id)
-                    break
-                except Exception:
-                    await asyncio.sleep(2 ** (attempt - 1) + (attempt - 1) * 0.5)
+            youtube_content = await self._get_youtube_content(video_id)
 
 
-            if transcript_text:
+            if youtube_content:
+
                 summary = await self._summarize_text(
-                    content=transcript_text,
+                    content=youtube_content,
+
                     context="YouTube video content",
                     tool="youtube",
+
                 )
 
                 full_response = (
                     f"## YouTube Video Summary\n\n**Video URL:** {url}\n\n"
                     f"### Summary\n\n{summary}\n\n---\n\n"
-                    "*This summary was generated from the video's transcript.*"
+                    "*This summary was generated from available YouTube data (transcript, subtitles, or metadata).*"
                 )
             else:
                 full_response = (
@@ -166,109 +163,165 @@ class SummarizationService:
         except Exception as e:
             print(f"❌ YouTube summarization error: {e}")
             raise
-    
-    async def _get_youtube_transcript(self, video_id: str) -> Optional[str]:
-        """Get YouTube transcript using yt-dlp (more reliable than youtube-transcript-api)."""
+
+    async def _get_youtube_content(self, video_id: str) -> Optional[str]:
+        """Fetch YouTube information using a free fallback chain.
+
+        Fallback chain:
+            youtube-transcript-api
+            ↓
+            yt-dlp subtitles
+            ↓
+            yt-dlp metadata
+        """
+
+        print(f"[YouTube] Processing {video_id}")
+
+        transcript = await self._transcript_api_fetch(video_id)
+        if transcript:
+            print("[YouTube] Transcript API success")
+            return transcript
+
+        transcript = await self._ytdlp_subtitles(video_id)
+        if transcript:
+            print("[YouTube] yt-dlp subtitles success")
+            return transcript
+
+        metadata = await self._ytdlp_metadata(video_id)
+        if metadata:
+            print("[YouTube] Using metadata fallback")
+            return metadata
+
+        return None
+
+    async def _transcript_api_fetch(self, video_id: str) -> Optional[str]:
+        """Try to fetch transcript using youtube-transcript-api."""
         try:
-            # Importing inside the function keeps module import optional for non-YouTube usage
-            import yt_dlp
+            from youtube_transcript_api import YouTubeTranscriptApi
 
-            print(f"[YouTubeTranscript] Fetching transcript for video_id={video_id}")
-
-            def fetch_preferred_transcript():
-                # yt-dlp returns subtitle metadata; we then download/parse the best one.
-                # This runs in a worker thread since yt-dlp is blocking.
+            def run():
                 try:
-                    # writesubtitles/writeautomaticsub causes yt-dlp to actually fetch and process subtitle files.
-                    # We skip_download to avoid downloading video media.
-                    ydl_opts = {
-                        "writesubtitles": True,
-                        "writeautomaticsub": True,
-                        "skip_download": True,
-                        "quiet": True,
-                        "no_warnings": True,
-                        # Prefer English if available, otherwise we'll fall back to whatever yt-dlp picked.
-                        "subtitleslangs": ["en", "en.*"],
-                    }
+                    api = YouTubeTranscriptApi()
+                    transcript = api.fetch(video_id)
 
-                    # Use video id as the URL for yt-dlp extraction
-                    # (yt-dlp can handle a bare id for YouTube in many cases; we still provide a full URL for safety)
-                    video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(video_url, download=False)
-
-                        subs = info.get("subtitles") or {}
-                        auto_subs = info.get("automatic_captions") or {}
-
-                        # Choose subtitles: prefer manually provided English, then auto-captions.
-                        preferred_langs = ["en", "en.*"]
-
-                        def pick_subtitle_url(subs_dict: dict) -> Optional[str]:
-                            # subs_dict shape: {lang_code: [{url: ...}, ...]}
-                            if not subs_dict:
-                                return None
-                            # direct match first
-                            if "en" in subs_dict and subs_dict["en"]:
-                                return subs_dict["en"][0].get("url")
-                            # fallback: first entry
-                            for lang_code, tracks in subs_dict.items():
-                                if tracks:
-                                    return tracks[0].get("url")
-                            return None
-
-                        chosen_url = pick_subtitle_url(subs) or pick_subtitle_url(auto_subs)
-
-                        if not chosen_url:
-                            return None
-
-                        # Download the subtitle content itself and extract text.
-                        # yt-dlp subtitle files may be in vtt/srvtt/ttml; easiest is to ask yt-dlp to fetch
-                        # it as a 'download' target (skip_download is already set).
-                        # We'll use yt-dlp again with subtitlesonly to materialize the file.
-                        # However, for reliability we instead rely on yt-dlp's returned subtitle text is not provided.
-                        # So we fetch and parse the URL directly as text.
-                        import requests
-                        resp = requests.get(chosen_url, timeout=30)
-                        resp.raise_for_status()
-
-                        content = resp.text or ""
-                        # Basic cleanup for common formats (VTT/TTML).
-                        # Remove WebVTT timestamps lines like "00:00:01.000 --> 00:00:03.000"
-                        lines = []
-                        for line in content.splitlines():
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if line.startswith("WEBVTT") or "-->" in line or line.replace(".", "").replace(":", "").isdigit():
-                                continue
-                            # Remove simple XML tags if present
-                            if "<" in line and ">" in line:
-                                import re
-                                line = re.sub(r"<[^>]+>", " ", line).strip()
-                                if not line:
-                                    continue
-                            lines.append(line)
-
-                        text = " ".join(lines).strip()
-                        return text or None
-
+                    return " ".join(
+                        (item.text if hasattr(item, "text") else item["text"]) for item in transcript
+                    )
                 except Exception as e:
-                    print(f"[YouTubeTranscript ERROR] {e}")
+                    print(f"[TranscriptAPI] {e}")
                     return None
 
-            text = await asyncio.to_thread(fetch_preferred_transcript)
-            if text:
-                print(f"[YouTubeTranscript] Returning transcript text for video_id={video_id} (len={len(text)})")
-            else:
-                print(f"[YouTubeTranscript] No transcript text returned for video_id={video_id}")
-            return text
+            return await asyncio.to_thread(run)
 
         except Exception as e:
-            print(f"Transcript error: {e}")
+            print(f"[TranscriptAPI Import] {e}")
             return None
 
+    async def _ytdlp_subtitles(self, video_id: str) -> Optional[str]:
+        """Try to fetch subtitle text using yt-dlp subtitle URLs."""
+        try:
+            import yt_dlp
+            import requests
 
+            def run():
+                try:
+                    url = f"https://www.youtube.com/watch?v={video_id}"
+
+                    opts = {
+                        "skip_download": True,
+                        "quiet": True,
+                    }
+
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+
+                    subtitles = info.get("subtitles") or {}
+                    auto_captions = info.get("automatic_captions") or {}
+
+                    # Prefer manual subtitles, then auto captions.
+                    def pick_first_subtitle_url(subs_dict: dict) -> Optional[str]:
+                        for _lang, tracks in (subs_dict or {}).items():
+                            if not tracks:
+                                continue
+                            return tracks[0].get("url")
+                        return None
+
+                    subtitle_url = (
+                        pick_first_subtitle_url(subtitles) or pick_first_subtitle_url(auto_captions)
+                    )
+
+                    if not subtitle_url:
+                        return None
+
+                    response = requests.get(subtitle_url, timeout=20)
+                    response.raise_for_status()
+
+                    text = response.text or ""
+                    text = re.sub(r"<[^>]+>", " ", text)
+                    text = re.sub(r"\d+:\d+:\d+\.\d+", " ", text)
+                    text = re.sub(r"\s+", " ", text)
+                    return text.strip() or None
+
+                except Exception as e:
+                    print(f"[yt-dlp subtitles] {e}")
+                    return None
+
+            return await asyncio.to_thread(run)
+
+        except Exception as e:
+            print(f"[yt-dlp subtitles outer] {e}")
+            return None
+
+    async def _ytdlp_metadata(self, video_id: str) -> Optional[str]:
+        """Fallback: fetch title/description/tags/channel using yt-dlp metadata."""
+        try:
+            import yt_dlp
+
+            def run():
+                try:
+                    url = f"https://www.youtube.com/watch?v={video_id}"
+                    opts = {
+                        "skip_download": True,
+                        "quiet": True,
+                    }
+
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+
+                    title = info.get("title", "") or ""
+                    description = info.get("description", "") or ""
+                    uploader = info.get("uploader", "") or ""
+                    tags = ", ".join((info.get("tags", []) or [])[:20])
+
+                    # Keep metadata compact to avoid huge prompts
+                    if len(description) > 4000:
+                        description = description[:4000] + "..."
+
+                    return f"""
+Title:
+{title}
+
+Channel:
+{uploader}
+
+Tags:
+{tags}
+
+Description:
+{description}
+"""
+
+                except Exception as e:
+                    print(f"[yt-dlp metadata] {e}")
+                    return None
+
+            return await asyncio.to_thread(run)
+
+        except Exception as e:
+            print(f"[yt-dlp metadata outer] {e}")
+            return None
+
+    
     
     async def summarize_website(
         self,
