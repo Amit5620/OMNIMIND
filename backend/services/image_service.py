@@ -51,7 +51,10 @@ class ImageGenerationService:
         try:
             # Important: use HF InferenceClient with HF token.
             # Do NOT set provider="fal-ai" (your env var naming + HF token expects HF provider).
-            self.client = InferenceClient(api_key=self.huggingface_key)
+            self.client = InferenceClient(
+                provider="hf-inference",
+                api_key=self.huggingface_key
+            )
             print("🚀 Image Service: HF client ready")
         except Exception as e:
             self.client = None

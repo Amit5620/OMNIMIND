@@ -249,14 +249,21 @@ async def health_check():
 
 @app.get("/dns-test")
 async def dns_test():
-    """Directly test DNS resolution inside the Render container."""
-    try:
-        import socket
+    import socket
 
-        ip = socket.gethostbyname("api-inference.huggingface.co")
-        return {"success": True, "ip": ip}
+    try:
+        return {
+            "success": True,
+            "ip": socket.gethostbyname(
+                "api-inference.huggingface.co"
+            )
+        }
+
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 @app.get("/hf-network")

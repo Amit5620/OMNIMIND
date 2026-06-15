@@ -14,7 +14,7 @@ requests==2.32.3
 # AI Services
 groq==0.8.0
 openai==1.52.0
-huggingface_hub==0.24.6
+huggingface_hub>=0.34.0
 
 # Database - Astra DB (Cassandra)
 astrapy==2.1.0
@@ -35,11 +35,11 @@ lxml==5.2.2
 starlette==0.38.6
 
 # Streamlit app dependencies
-streamlit==1.32.0
-langchain>=0.0.200
+# streamlit==1.32.0
+# langchain>=0.0.200
 langchain-groq
 langchain-community
 validators==0.20.0
-sentence-transformers==5.1.0
-faiss-cpu
-unstructured
+# sentence-transformers==5.1.0
+# faiss-cpu
+# unstructured
