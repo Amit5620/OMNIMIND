@@ -180,86 +180,26 @@ class SummarizationService:
 
             # Blocking transcript operations should run off the event loop
             def fetch_preferred_transcript():
+                import traceback
                 try:
-                    yt = YouTubeTranscriptApi()
+                    transcript = YouTubeTranscriptApi.get_transcript(
+                        video_id,
+                        languages=["en", "en-US", "en-GB", "hi"],
+                    )
 
-                    # Preferred languages; we’ll try to pick one if the library supports it.
-                    preferred_langs = ["en", "en-US", "en-GB", "es", "fr", "de", "hi"]
+                    text = " ".join(
+                        item["text"]
+                        for item in transcript
+                    )
 
-                    # Robust transcript listing across youtube-transcript-api versions.
-                    # Some versions expose yt.list(video_id), others may behave differently.
-                    transcript_list = None
-                    try:
-                        transcript_list = yt.list(video_id)
-                    except Exception:
-                        transcript_list = None
-
-                    chosen = None
-                    if transcript_list is not None:
-                        # Try language filtering if TranscriptList.filter exists.
-                        for lang in preferred_langs:
-                            try:
-                                if hasattr(transcript_list, "filter"):
-                                    candidates = list(transcript_list.filter(languages=[lang]))  # type: ignore[attr-defined]
-                                    if candidates:
-                                        chosen = candidates[0]
-                                        break
-                            except Exception:
-                                pass
-
-                        # Fall back to first available transcript.
-                        if chosen is None:
-                            try:
-                                for t in transcript_list:
-                                    chosen = t
-                                    break
-                            except Exception:
-                                chosen = None
-
-                    if chosen is None:
-                        # Fallback: some versions provide direct get_transcript/transcript fetch methods.
-                        try:
-                            # Attempt commonly-used signature variants.
-                            if hasattr(YouTubeTranscriptApi, "get_transcript"):
-                                fetched = YouTubeTranscriptApi.get_transcript(video_id)  # type: ignore[attr-defined]
-                            elif hasattr(yt, "get_transcript"):
-                                fetched = yt.get_transcript(video_id)  # type: ignore[attr-defined]
-                            else:
-                                return None
-
-                            parts = []
-                            for seg in fetched:
-                                if isinstance(seg, dict):
-                                    parts.append(seg.get("text", ""))
-                                else:
-                                    parts.append(getattr(seg, "text", ""))
-                            joined = " ".join([p for p in parts if p]).strip()
-                            return joined if joined else None
-                        except Exception:
-                            return None
-
-                    fetched = chosen.fetch()
-                    parts = []
-                    for seg in fetched:
-                        if isinstance(seg, dict):
-                            parts.append(seg.get("text", ""))
-                        else:
-                            parts.append(getattr(seg, "text", ""))
-                    joined = " ".join([p for p in parts if p]).strip()
-
-                    if joined:
-                        print(
-                            f"[YouTubeTranscript] Returning transcript for video_id={video_id} (len={len(joined)})"
-                        )
-                    return joined if joined else None
+                    return text
 
                 except (NoTranscriptFound, TranscriptsDisabled, VideoUnavailable):
                     raise
                 except Exception as e:
-                    print(f"Transcript fetch inner error for {video_id}: {e}")
-                    return None
-
-
+                    print(f"[YouTubeTranscript ERROR] {e}")
+                    print(traceback.format_exc())
+                    raise
 
             text = await asyncio.to_thread(fetch_preferred_transcript)
             if text:
