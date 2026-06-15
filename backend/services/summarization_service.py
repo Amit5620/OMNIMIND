@@ -106,15 +106,13 @@ class SummarizationService:
 
             # Retry transcript fetch for transient network/rate-limit issues.
             transcript_text: Optional[str] = None
-            transcript_err: Optional[str] = None
             for attempt in range(1, 4):
                 try:
                     transcript_text = await self._get_youtube_transcript(video_id)
-                    transcript_err = None
                     break
-                except Exception as te:
-                    transcript_err = str(te)
+                except Exception:
                     await asyncio.sleep(2 ** (attempt - 1) + (attempt - 1) * 0.5)
+
 
             if transcript_text:
                 summary = await self._summarize_text(
@@ -170,35 +168,94 @@ class SummarizationService:
             raise
     
     async def _get_youtube_transcript(self, video_id: str) -> Optional[str]:
-        """Get YouTube video transcript"""
+        """Get YouTube transcript using yt-dlp (more reliable than youtube-transcript-api)."""
         try:
             # Importing inside the function keeps module import optional for non-YouTube usage
-            from youtube_transcript_api import YouTubeTranscriptApi
-            from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled, VideoUnavailable
+            import yt_dlp
 
             print(f"[YouTubeTranscript] Fetching transcript for video_id={video_id}")
 
-            # Blocking transcript operations should run off the event loop
             def fetch_preferred_transcript():
-                import traceback
+                # yt-dlp returns subtitle metadata; we then download/parse the best one.
+                # This runs in a worker thread since yt-dlp is blocking.
                 try:
-                    api = YouTubeTranscriptApi()
+                    # writesubtitles/writeautomaticsub causes yt-dlp to actually fetch and process subtitle files.
+                    # We skip_download to avoid downloading video media.
+                    ydl_opts = {
+                        "writesubtitles": True,
+                        "writeautomaticsub": True,
+                        "skip_download": True,
+                        "quiet": True,
+                        "no_warnings": True,
+                        # Prefer English if available, otherwise we'll fall back to whatever yt-dlp picked.
+                        "subtitleslangs": ["en", "en.*"],
+                    }
 
-                    transcript = api.fetch(video_id)
+                    # Use video id as the URL for yt-dlp extraction
+                    # (yt-dlp can handle a bare id for YouTube in many cases; we still provide a full URL for safety)
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-                    text = " ".join(
-                        getattr(item, "text", str(item))
-                        for item in transcript
-                    )
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(video_url, download=False)
 
-                    return text
+                        subs = info.get("subtitles") or {}
+                        auto_subs = info.get("automatic_captions") or {}
 
-                except (NoTranscriptFound, TranscriptsDisabled, VideoUnavailable):
-                    raise
+                        # Choose subtitles: prefer manually provided English, then auto-captions.
+                        preferred_langs = ["en", "en.*"]
+
+                        def pick_subtitle_url(subs_dict: dict) -> Optional[str]:
+                            # subs_dict shape: {lang_code: [{url: ...}, ...]}
+                            if not subs_dict:
+                                return None
+                            # direct match first
+                            if "en" in subs_dict and subs_dict["en"]:
+                                return subs_dict["en"][0].get("url")
+                            # fallback: first entry
+                            for lang_code, tracks in subs_dict.items():
+                                if tracks:
+                                    return tracks[0].get("url")
+                            return None
+
+                        chosen_url = pick_subtitle_url(subs) or pick_subtitle_url(auto_subs)
+
+                        if not chosen_url:
+                            return None
+
+                        # Download the subtitle content itself and extract text.
+                        # yt-dlp subtitle files may be in vtt/srvtt/ttml; easiest is to ask yt-dlp to fetch
+                        # it as a 'download' target (skip_download is already set).
+                        # We'll use yt-dlp again with subtitlesonly to materialize the file.
+                        # However, for reliability we instead rely on yt-dlp's returned subtitle text is not provided.
+                        # So we fetch and parse the URL directly as text.
+                        import requests
+                        resp = requests.get(chosen_url, timeout=30)
+                        resp.raise_for_status()
+
+                        content = resp.text or ""
+                        # Basic cleanup for common formats (VTT/TTML).
+                        # Remove WebVTT timestamps lines like "00:00:01.000 --> 00:00:03.000"
+                        lines = []
+                        for line in content.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line.startswith("WEBVTT") or "-->" in line or line.replace(".", "").replace(":", "").isdigit():
+                                continue
+                            # Remove simple XML tags if present
+                            if "<" in line and ">" in line:
+                                import re
+                                line = re.sub(r"<[^>]+>", " ", line).strip()
+                                if not line:
+                                    continue
+                            lines.append(line)
+
+                        text = " ".join(lines).strip()
+                        return text or None
+
                 except Exception as e:
                     print(f"[YouTubeTranscript ERROR] {e}")
-                    print(traceback.format_exc())
-                    raise
+                    return None
 
             text = await asyncio.to_thread(fetch_preferred_transcript)
             if text:
@@ -207,12 +264,10 @@ class SummarizationService:
                 print(f"[YouTubeTranscript] No transcript text returned for video_id={video_id}")
             return text
 
-        except (NoTranscriptFound, TranscriptsDisabled, VideoUnavailable) as e:
-            print(f"Transcript unavailable for video {video_id}: {e}")
-            return None
         except Exception as e:
             print(f"Transcript error: {e}")
             return None
+
 
     
     async def summarize_website(
