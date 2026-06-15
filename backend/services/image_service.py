@@ -1,15 +1,18 @@
-"""
+"""backend.services.image_service
+
 Image Generation Service
 
-Uses Hugging Face InferenceClient + Cloudinary upload handled by main API.
+Purpose:
+- Generate images using HuggingFace InferenceClient.
+- If HuggingFace is unreachable (DNS/network restrictions on hosting), return placeholders
+  so the frontend still receives images.
 
-This file is critical for production image generation.
-
-Fixes:
-- Correct HuggingFace client initialization for Render environments.
-- Ensures valid Python syntax (no indentation errors).
-- Keeps placeholder fallback if HF fails.
+Notes:
+- Cloudinary upload + DB persistence are handled by backend/main.py endpoints.
+- This module must be valid Python (no indentation errors).
 """
+
+from __future__ import annotations
 
 import io
 import os
@@ -33,56 +36,62 @@ HUGGING_FACE_API_KEY = os.getenv("HUGGING_FACE_API_KEY", "")
 class ImageGenerationService:
     """Image generation with chat continuity and edit support."""
 
-    def __init__(self, db_service):
+    def __init__(self, db_service: Any):
         self.db_service = db_service
         self.huggingface_key = HUGGING_FACE_API_KEY
         self.client: Optional[InferenceClient] = None
         self._init_client()
 
     def _init_client(self) -> None:
-        """Initialize HuggingFace client."""
         if not self.huggingface_key:
             self.client = None
             print("⚠️ No HUGGING_FACE_API_KEY")
             return
 
         try:
-            # Hugging Face InferenceClient works with HF tokens.
-            # Do NOT use provider="fal-ai" here, because env var is named HUGGING_FACE_API_KEY.
+            # Important: use HF InferenceClient with HF token.
+            # Do NOT set provider="fal-ai" (your env var naming + HF token expects HF provider).
             self.client = InferenceClient(api_key=self.huggingface_key)
             print("🚀 Image Service: HF client ready")
         except Exception as e:
             self.client = None
             print(f"⚠️ HF client failed: {e}")
 
-    async def _generate_huggingface(
+    async def get_chat_images(
         self,
-        prompt: str,
-        width: int = 1024,
-        height: int = 1024,
-    ) -> List[bytes]:
-        """Generate image via Hugging Face InferenceClient."""
-        if not self.client:
-            raise Exception("HF client not available")
+        user_id: str,
+        chat_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Load image history for chat (used to add continuity to prompts)."""
+        if not user_id or user_id == "anonymous":
+            return []
 
-        # Note: InferenceClient API varies by provider/model.
-        # We follow the existing approach from your code.
-        image = self.client.text_to_image(
-            prompt,
-            model="black-forest-labs/FLUX.1-schnell",
-        )
+        chat = await self.db_service.get_chat(user_id, chat_id)
+        if not chat:
+            print(f"⚠️ Chat not found for user {user_id}, chat_id {chat_id}")
+            return []
 
-        if not image:
-            raise Exception("No image returned")
+        images: List[Dict[str, Any]] = []
+        for msg in chat.get("messages", []):
+            if msg.get("type") == "image" and "image_data" in msg:
+                img_data = msg["image_data"]
+                images.append(
+                    {
+                        "image_id": img_data.get("image_id"),
+                        "prompt": img_data.get("prompt", ""),
+                        "full_prompt": img_data.get("full_prompt", ""),
+                        "is_edit": img_data.get("is_edit", False),
+                        "provider": img_data.get("provider", ""),
+                        "created_at": img_data.get("created_at", ""),
+                        "image_url": msg.get("image_url"),
+                    }
+                )
 
-        img_bytes = io.BytesIO()
-        # image object is expected to be PIL-like
-        image.save(img_bytes, format="PNG")
-        img_bytes.seek(0)
-        return [img_bytes.getvalue()]
+        print(f"📂 Loaded {len(images)} images for user {user_id}, chat {chat_id}")
+        return images
 
     def _generate_placeholder(self, prompt: str, samples: int) -> List[bytes]:
-        """Placeholder images (used if HF fails)."""
+        """Placeholder images returned when HF generation fails."""
         images: List[bytes] = []
         colors = [(100, 150, 255), (255, 150, 100), (100, 255, 150), (255, 100, 200)]
 
@@ -111,34 +120,29 @@ class ImageGenerationService:
 
         return images
 
-    async def get_chat_images(self, user_id: str, chat_id: str) -> List[Dict[str, Any]]:
-        """Load full image history for chat."""
-        if not user_id or user_id == "anonymous":
-            return []
+    async def _generate_huggingface(
+        self,
+        prompt: str,
+        width: int = 1024,
+        height: int = 1024,
+    ) -> List[bytes]:
+        if not self.client:
+            raise Exception("HF client not available")
 
-        chat = await self.db_service.get_chat(user_id, chat_id)
-        if not chat:
-            print(f"⚠️ Chat not found for user {user_id}, chat_id {chat_id}")
-            return []
+        # Your model choice from existing code
+        image = self.client.text_to_image(
+            prompt,
+            model="black-forest-labs/FLUX.1-schnell",
+        )
 
-        images: List[Dict[str, Any]] = []
-        for msg in chat.get("messages", []):
-            if msg.get("type") == "image" and "image_data" in msg:
-                img_data = msg["image_data"]
-                images.append(
-                    {
-                        "image_id": img_data.get("image_id"),
-                        "prompt": img_data.get("prompt", ""),
-                        "full_prompt": img_data.get("full_prompt", ""),
-                        "is_edit": img_data.get("is_edit", False),
-                        "provider": img_data.get("provider", ""),
-                        "created_at": img_data.get("created_at", ""),
-                        "image_url": msg.get("image_url"),
-                    }
-                )
+        if not image:
+            raise Exception("No image returned")
 
-        print(f"📂 Loaded {len(images)} images for user {user_id}, chat {chat_id}")
-        return images
+        img_bytes = io.BytesIO()
+        # expected: PIL-like image
+        image.save(img_bytes, format="PNG")
+        img_bytes.seek(0)
+        return [img_bytes.getvalue()]
 
     async def generate(
         self,
@@ -151,9 +155,12 @@ class ImageGenerationService:
         base_image_url: Optional[str] = None,
         is_edit: bool = False,
     ) -> Dict[str, Any]:
-        """Generate or edit image. Returns bytes in `images`.
+        """Generate or edit image.
 
-        Main API endpoint is responsible for Cloudinary upload and DB persistence.
+        Returns:
+          { images: List[bytes], chat_id: str, ... }
+
+        Main API endpoint will convert bytes to Cloudinary URLs.
         """
 
         if not chat_id:
@@ -176,15 +183,7 @@ class ImageGenerationService:
                 )
                 print(f"   📝 Added context from {len(previous_prompts)} previous images")
 
-        edit_keywords = [
-            "add",
-            "remove",
-            "change",
-            "modify",
-            "put",
-            "toppings",
-            "edit",
-        ]
+        edit_keywords = ["add", "remove", "change", "modify", "put", "toppings", "edit"]
         detected_edit = is_edit or any(
             re.search(rf"\b{word}\b", prompt.lower()) for word in edit_keywords
         )
@@ -212,9 +211,9 @@ class ImageGenerationService:
         except Exception as e:
             print(f"   ❌ Generation failed: {e}")
             generated_images = self._generate_placeholder(prompt, samples)
-            provider = "error"
+            provider = "placeholder"
 
-        # Keep metadata locally for caller/diagnostics; DB persistence happens elsewhere.
+        # metadata kept for compatibility/diagnostics; main.py persists later.
         _image_history = {
             "image_id": f"img_{uuid.uuid4().hex[:12]}",
             "chat_id": chat_id,
@@ -223,7 +222,6 @@ class ImageGenerationService:
             "full_prompt": full_prompt,
             "is_edit": detected_edit,
             "base_image_url": base_image_url,
-            "images_data": [img.hex() for img in generated_images[:1]],
             "provider": provider,
             "width": width,
             "height": height,
@@ -249,11 +247,11 @@ class ImageGenerationService:
         user_id: str,
         chat_id: str,
     ) -> Dict[str, Any]:
-        """Edit existing image."""
         print(f"✏️ Editing image {base_image_url[:50]} with: '{edit_prompt[:50]}'")
         edit_prompt_full = (
             f"Edit this image: {base_image_url}. Modifications: {edit_prompt}. Preserve original composition."
         )
+
         return await self.generate(
             prompt=edit_prompt_full,
             user_id=user_id,
