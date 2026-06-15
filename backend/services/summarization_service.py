@@ -182,13 +182,12 @@ class SummarizationService:
             def fetch_preferred_transcript():
                 import traceback
                 try:
-                    transcript = YouTubeTranscriptApi.get_transcript(
-                        video_id,
-                        languages=["en", "en-US", "en-GB", "hi"],
-                    )
+                    api = YouTubeTranscriptApi()
+
+                    transcript = api.fetch(video_id)
 
                     text = " ".join(
-                        item["text"]
+                        getattr(item, "text", str(item))
                         for item in transcript
                     )
 
