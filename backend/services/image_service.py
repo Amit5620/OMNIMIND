@@ -259,4 +259,3 @@ class ImageGenerationService:
             base_image_url=base_image_url,
             is_edit=True,
         )
-

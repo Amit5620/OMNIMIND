@@ -244,6 +244,36 @@ async def health_check():
 
 
 # ===================
+# Network Diagnostics (Render -> Hugging Face)
+# ===================
+
+@app.get("/dns-test")
+async def dns_test():
+    """Directly test DNS resolution inside the Render container."""
+    try:
+        import socket
+
+        ip = socket.gethostbyname("api-inference.huggingface.co")
+        return {"success": True, "ip": ip}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/hf-network")
+async def hf_network():
+    """Test outbound HTTPS connectivity to Hugging Face."""
+    try:
+        import requests
+
+        r = requests.get("https://huggingface.co", timeout=10)
+        return {"success": True, "status": r.status_code}
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+
+# ===================
 # AI Chat Endpoint
 # ===================
 
