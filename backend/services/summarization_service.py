@@ -173,6 +173,8 @@ class SummarizationService:
             yt-dlp subtitles
             ↓
             yt-dlp metadata
+            ↓
+            YouTube oEmbed (fast; usually not blocked)
         """
 
         print(f"[YouTube] Processing {video_id}")
@@ -192,7 +194,47 @@ class SummarizationService:
             print("[YouTube] Using metadata fallback")
             return metadata
 
+        oembed_text = await self._youtube_oembed_fetch(video_id)
+        if oembed_text:
+            print("[YouTube] Using oEmbed fallback")
+            return oembed_text
+
         return None
+
+    async def _youtube_oembed_fetch(self, video_id: str, timeout: int = 10) -> Optional[str]:
+        """Fetch title/channel info using YouTube oEmbed.
+
+        This endpoint typically works even when transcript/yt-dlp are blocked.
+        """
+        try:
+            url = (
+                "https://www.youtube.com/oembed?"
+                f"url=https://www.youtube.com/watch?v={video_id}&format=json"
+            )
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+
+            title = (data.get("title") or "").strip()
+            author = (data.get("author_name") or "").strip()
+
+            if not title and not author:
+                return None
+
+            # Keep it compact and LLM-friendly.
+            return (
+                "Title:\n"
+                f"{title}\n\n"
+                "Channel:\n"
+                f"{author}\n"
+            )
+        except Exception as e:
+            print(f"[YouTube oEmbed] {e}")
+            return None
+
 
     async def _transcript_api_fetch(self, video_id: str) -> Optional[str]:
         """Try to fetch transcript using youtube-transcript-api."""
